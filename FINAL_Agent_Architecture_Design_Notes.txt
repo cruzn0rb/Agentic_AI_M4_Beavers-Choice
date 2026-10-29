@@ -1,0 +1,170 @@
+BEAVER'S CHOICE / MUNDER DIFFLIN PAPER COMPANY
+FINAL DESIGN NOTES — UDACITY MODULE 4 MULTI-AGENT SYSTEM
+Updated: October 29, 2026
+Primary Python submission: project_starter.py
+Architecture figure: Munder_Difflin_Workflow.png
+Companion document: Beavers_Choice_Design_Reflection_and_Evaluation_Plan.md
+
+PURPOSE AND NAMING
+The assignment overview uses "Beaver's Choice Paper Company"; the supplied course
+README/starter uses "Munder Difflin Paper Company." The names identify the same
+exercise. The implementation follows the Munder Difflin starter naming; the
+architecture and reflection document identify both names to avoid confusion.
+
+IMPLEMENTATION STATUS — WHAT EXISTS
+- One consolidated, 781-line project_starter.py (source reviewed October 29, 2026).
+- PydanticAI orchestration: 1 Orchestrator + 4 worker agents = 5 maximum.
+- Nine registered tools across the four worker agents.
+- Seven required starter helper functions included and called through tools or
+  guarded controller operations.
+- SQLite ledger implemented via SQLAlchemy; pandas/NumPy for seed/data work.
+- Historical quote data and catalog prices inform deterministic volume quotes.
+- Customer acceptance, stock checks, deadline checks, and protected transaction
+  writes are implemented; customer inquiries are not automatically booked unless
+  the TEST-ONLY --simulate-acceptance option is supplied.
+- Optional --auto-reorder performs cash-checked replenishment without a human
+  manager approval; it should remain disabled outside disposable test runs.
+- A persistent HITL approval queue, atomic multi-line sales, durable idempotency,
+  and a multi-file package architecture are NOT implemented.
+
+AGENT RESPONSIBILITIES AND TOOLS (NO SIXTH AGENT)
+1. ORCHESTRATOR — PydanticAI RoutedRequest output: intent, list of requested
+   products/quantities, explicit delivery deadline, and routing explanation.
+   It cannot write to the database. Operated via process_request().
+2. INVENTORY — snapshot_inventory -> get_all_inventory;
+   inspect_inventory -> get_stock_level;
+   supplier_delivery -> get_supplier_delivery_date.
+   Resolves stock/shortage facts but supplier ETA is not customer-delivery ETA.
+3. QUOTING — historical_quotes -> search_quote_history;
+   calculate_customer_quote -> price_line() with controlled catalog pricing.
+   Applies tier discounts; cannot post sales.
+4. SALES — check_order_feasibility -> get_stock_level and
+   get_supplier_delivery_date; record_transaction -> create_transaction.
+   Controller-only write authorization uses _WRITE_ALLOWED; this is NOT a
+   substitute for human authorization. execute_order() rechecks availability.
+5. BUSINESS ADVISOR — read_cash_balance -> get_cash_balance;
+   financial_overview -> generate_financial_report. Optional cash_safe_restock()
+   invokes a guarded stock-purchase operation under explicit CLI flag.
+   Internal cash and report details must not be sent to customers.
+
+RETAINED/IMPLEMENTED STARTER UTILITIES
+- generate_sample_inventory(): deterministic subset of opening product stock.
+- init_database(db_engine, seed=137): recreates demo tables and loads historical
+  CSV data. DESTRUCTIVE: run only against a disposable project/test database.
+- create_transaction(): validates and records sale or stock-order ledger entry.
+- get_all_inventory(): effective positive stock quantities as of a date.
+- get_stock_level(): one product's effective quantity as of a date.
+- get_supplier_delivery_date(): estimate for supplier arrival by quantity.
+- get_cash_balance(): sales proceeds less stock purchases through the date.
+- generate_financial_report(): cash, inventory valuation, and top selling items.
+- search_quote_history(): prior quote examples using request/quote text search.
+- sql_df(): SQLAlchemy-compatible DataFrame query convenience function.
+
+CURRENT REQUEST FLOW
+Text + request_date -> Orchestrator structured output -> exact catalog resolver
+-> normalize and aggregate duplicate SKUs -> Inventory checks -> Quoting context
+and deterministic price policy -> Sales readiness check ->
+(a) inventory answer / quote only, no write;
+(b) accepted feasible order -> guarded create_transaction() entries; or
+(c) clarification, rejection, or unfulfilled status with customer explanation.
+Business Advisor reviews internal reporting on a periodic evaluation cadence.
+
+POLICY DEFAULTS IN SOURCE (EDUCATIONAL ASSUMPTIONS, NOT APPROVED CLIENT POLICY)
+- Base markup: 25% over catalog unit_price.
+- Bulk discount: 5% at >=100; 10% at >=500; 15% at >=1000 units.
+- History adjustment: +1 percentage-point discount for quantities >=500 when
+  at least three comparable historical results are found.
+- Price floor: at least 5% above the catalog supplier unit_price; currency
+  rounded using Decimal to cents.
+- Discount labels describe a nominal tier; if the price floor overrides a
+  discount, a future release should calculate and disclose effective savings.
+
+EVALUATION EVIDENCE AVAILABLE AS OF THIS DOCUMENT
+Verified in an isolated local test using a temporary SQLite database, minimal
+historical CSV fixtures, and stubbed Orchestrator responses:
+- Python py_compile passed.
+- 4 synthetic order requests: 3 fulfilled; 1 rejected due to an impossible
+  supplier-arrival deadline.
+- 3 positive cash changes; test deltas were +$12.60, +$10.00, and +$1.20.
+- Catalog resolution/unsupported-item safeguards and reporting helpers checked.
+NOT VERIFIED: live Udacity proxy LLM behavior over all rows of
+quote_requests_sample.csv; no genuine complete-course test_results.csv is
+available in the reviewed artifact set. The local test is not a substitute.
+
+HUMAN-IN-THE-LOOP (HITL) — CURRENT VS RECOMMENDED
+Existing: customer-confirmation gate and a controller-protected write tool;
+--simulate-acceptance bypasses customer confirmation for evaluation only.
+Not yet implemented: manager approval queue, persisted pending requests,
+human approve/reject commands, authorization/role checks, audit history.
+Recommended risk-based checkpoints (ILLUSTRATIVE thresholds):
+1. Quote exception: discount >15% or special high-value pricing -> Sales Manager.
+2. Supplier replenishment: stock purchase >$2,000 -> Purchasing/Finance Manager.
+3. High-value sale: order >$5,000 -> designated authorized reviewer.
+4. Partial shipment, substitution or missed deadline -> customer and Operations.
+5. Financial anomaly/duplicate transaction -> Finance review and hold.
+Approval states: PENDING -> APPROVED | REJECTED | EXPIRED | CANCELLED;
+APPROVED -> REVALIDATE -> EXECUTED | BLOCKED/EXPIRED.
+No ledger writes while pending; reject expired/unauthorized approvals; recheck
+stock, dates, pricing, cash, and customer acceptance before committing. Record
+human reviewer, reasons, timestamps, request version, and audit events. The
+approval service is deterministic workflow logic, NOT a sixth agent.
+
+MODULARIZATION FINDINGS AND FUTURE ARCHITECTURE
+Reviewed file: 781 lines; 24 top-level functions; typed structures RequestedItem,
+RoutedRequest, PlannedLine; all five agents created by build_agents().
+Challenge: one source file mixes SQLite, supplier/cash helpers, SKU aliases,
+pricing, tool registration, order execution, CLI, and CSV evaluation.
+Recommended development-only package (one responsibility per file):
+  munder_difflin/config.py       environment variables, policy settings
+  munder_difflin/models.py       Pydantic request/result and order schemas
+  munder_difflin/database.py     SQLite connections and starter helpers
+  munder_difflin/catalog.py      exact item resolution and SKU rules
+  munder_difflin/pricing.py      Decimal prices/history-aware discounts
+  munder_difflin/agents.py       five PydanticAI agents and tool registration
+  munder_difflin/fulfillment.py  sale/replenishment verification and writes
+  munder_difflin/workflow.py     routing, orchestration, response formatting
+  munder_difflin/approvals.py    FUTURE durable HITL and reviewer policy
+  munder_difflin/evaluation.py   CSV runner, counters, reports
+  tests/                       isolated pricing, inventory, order, HITL tests
+
+FINAL SUBMISSION CONSTRAINT
+The rubric asks for ONE Python file. Keep the working consolidated
+project_starter.py for grading; the multi-file structure is a recommended
+follow-on engineering refactor, not a claim about the current implementation.
+If refactoring after grading, preserve the original helper interfaces and
+regression-test a packaged distribution or generated single-file build.
+
+TECHNICAL RISKS / NEXT IMPROVEMENTS
+- Multi-item sales currently use sequential inserts after checks, NOT an atomic
+  multi-row SQLite transaction; add rollback and idempotency/request IDs.
+- Unverified paper dimensions/weights may be lost by generic catalog aliases;
+  explicitly validate size, finish, weight, packaging, and unit before booking.
+- Supplier arrival != customer delivery; estimate dispatch/transit separately.
+- Finance guard should distinguish purchase commitment, receipt and cash timing.
+- Add approval policies, least-privilege authorization and immutable audit trail.
+- Add structured logging, deterministic fixtures and end-to-end proxy tests.
+
+REPRODUCIBLE UDACITY EVALUATION (WORKSPACE ONLY)
+Python runtime: use Python 3.10+ for this consolidated script (3.11 preferred);
+current type annotations use the X | None syntax.
+Dependencies: pip install -r requirements.txt
+              pip install "pydantic-ai-slim[openai]" python-dotenv
+Environment .env (never commit):
+  UDACITY_OPENAI_API_KEY=<your key>
+  UDACITY_OPENAI_BASE_URL=https://openai.vocareum.com/v1
+  UDACITY_MODEL=<proxy-supported model>
+Required data in same folder: quotes.csv, quote_requests.csv,
+quote_requests_sample.csv, project_starter.py.
+Run on disposable test data: python project_starter.py --simulate-acceptance
+(Option treats quotes as accepted for GRADING SIMULATION, not real business.)
+Review the generated test_results.csv and record actual figures for every
+sample row. Check at least 3 fulfilled, at least 3 cash movements, and at
+least 1 unfulfilled/rejected with explanation. The rubric is NOT yet confirmed
+against the authentic full dataset.
+
+SECURITY AND SUBMISSION
+Do not upload .env, credentials or munder_difflin.db. If a real API key was
+committed to a public repository, rotate/revoke it; .gitignore does not erase
+old commits. Submit project_starter.py, workflow PNG, this Design_Notes.txt,
+Beavers_Choice_Design_Reflection_and_Evaluation_Plan.md, and the genuine
+workspace-generated test_results.csv after completing the official evaluation.
