@@ -4,5 +4,3 @@ openai==1.76.0
 SQLAlchemy==2.0.40
 python-dotenv==1.1.0
 pydantic-ai==0.4.2
-
-https://github.com/cruzn0rb/Agentic_AI_M4_Beavers-Choice.git
