@@ -1,4 +1,4 @@
-""" Beaver's Choice Paper Company - complete single-file submission.
+"""Munder Difflin / Beaver's Choice Paper Company - complete single-file submission.
 
 Five PydanticAI agents: Orchestrator, Inventory, Quoting, Sales, Business Advisor.
 Requirements: pandas, numpy, sqlalchemy, python-dotenv, pydantic-ai-slim[openai].
@@ -278,12 +278,27 @@ class PlannedLine:
 
 
 def iso_date(raw: str | None, default: str | None = None) -> str:
-    """Parse only well-defined ISO-like dates; do not silently invent a deadline."""
+    """Normalize Udacity sample dates (MM/DD/YY) and ISO dates to YYYY-MM-DD.
+
+    Supports 2025-04-01, 04/01/25, 04/01/2025, and ISO datetime
+    strings. A supplied default is normalized using these same rules.
+    Unrecognized or impossible dates fail explicitly instead of being guessed.
+    """
     if raw is None or str(raw).strip() == "":
         if default is None:
             raise ValueError("A request date is required")
-        return default
-    return date.fromisoformat(str(raw).strip().split("T")[0]).isoformat()
+        return iso_date(default)
+    value = str(raw).strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    # ISO datetimes are accepted, but malformed timestamps are not silently truncated.
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except ValueError as exc:
+        raise ValueError(f"Unsupported or invalid date format: {raw!r}") from exc
 
 
 def money(x: Decimal | float | int | str) -> Decimal:
@@ -717,8 +732,15 @@ def process_request(agents: dict[str, Agent], customer_text: str, request_date: 
 def run_test_scenarios(agents: dict[str, Agent], sample_path: str = "quote_requests_sample.csv",
                        simulate_acceptance: bool = False, auto_reorder: bool = False) -> list[dict]:
     """Run every CSV row, preserve original row identity, and export true test results."""
-    with open(sample_path, newline="", encoding="utf-8-sig") as f:
+    sample_file = Path(sample_path)
+    if not sample_file.is_absolute():
+        sample_file = ROOT / sample_file
+    if not sample_file.is_file():
+        raise FileNotFoundError(f"Evaluation CSV not found: {sample_file}")
+    with sample_file.open(newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
+    if rows and ("request" not in rows[0] or "request_date" not in rows[0]):
+        raise ValueError("Evaluation CSV must have 'request' and 'request_date' columns")
     if not rows:
         raise ValueError("No sample requests supplied")
     # Process in chronological order to keep ledger-as-of-date comparisons coherent.
@@ -743,7 +765,8 @@ def run_test_scenarios(agents: dict[str, Agent], sample_path: str = "quote_reque
               "intent", "status", "reason", "quote_total", "cash_before",
               "cash_after", "cash_change", "fulfillment_date", "customer_response"]
     # Stable output order matches input data, even if processing was date-sorted.
-    with open("test_results.csv", "w", newline="", encoding="utf-8") as f:
+    results_path = ROOT / "test_results.csv"
+    with results_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(sorted(results, key=lambda r: r["original_row"]))
@@ -755,7 +778,7 @@ def run_test_scenarios(agents: dict[str, Agent], sample_path: str = "quote_reque
     print("Rubric: at least 3 fulfilled, at least 3 cash movements, at least 1 rejected/unfulfilled")
     if successes < 3 or movements < 3 or declines < 1:
         print("WARNING: Rubric thresholds not achieved. Inspect generated test_results.csv.")
-    print("Saved test_results.csv")
+    print(f"Saved {results_path} ({len(results)} of {len(rows)} sample rows)")
     return results
 
 
@@ -775,7 +798,10 @@ if __name__ == "__main__":
     init_database(db_engine)
     team = build_agents()
     run_test_scenarios(team, args.csv, args.simulate_acceptance, args.auto_reorder)
-    with open(args.csv, newline="", encoding="utf-8-sig") as f:
-        final_date = max(r["request_date"] for r in csv.DictReader(f))
+    sample_file = Path(args.csv)
+    if not sample_file.is_absolute():
+        sample_file = ROOT / sample_file
+    with sample_file.open(newline="", encoding="utf-8-sig") as f:
+        final_date = max(iso_date(r["request_date"]) for r in csv.DictReader(f))
     print("Final internal financial report:")
     print(json.dumps(generate_financial_report(final_date), default=str, indent=2))
